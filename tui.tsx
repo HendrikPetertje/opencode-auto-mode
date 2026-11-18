@@ -5,6 +5,7 @@
  */
 import { Plugin, usePlugin } from "@opencode/plugin/tui";
 import { RGBA, TextAttributes } from "@opentui/core";
+import { useTerminalDimensions } from "@opentui/solid";
 import { createEffect, createSignal, on as track, onCleanup, onMount } from "solid-js";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -60,6 +61,10 @@ const ICON = {
 };
 const SPINNER = ["◜", "◠", "◝", "◞", "◡", "◟"];
 const SIDEBAR_ROWS = 5;
+const MODAL_MARGIN = 2;
+/** OpenCode's dialog adds one row of top padding around the plugin's content. */
+const DIALOG_CHROME = 1;
+const MODAL_MIN = 10;
 
 /** The log folder as shown in settings, with the home folder as `~`. */
 function logFolderLabel(): string {
@@ -244,6 +249,9 @@ export default Plugin.define({
 
     const Modal = (props: { sessionID: string | undefined; recordID?: string; view?: "decisions" | "settings" }) => {
       const ctx = usePlugin();
+      const dims = useTerminalDimensions();
+      // Shrink to keep MODAL_MARGIN rows free above and below the dialog's background.
+      const modalHeight = (max: number) => Math.max(MODAL_MIN, Math.min(max, dims().height - 2 * MODAL_MARGIN - DIALOG_CHROME));
       const state = () => store.states[key(props.sessionID)];
       const [allowedOnly, setAllowedOnly] = createSignal(false);
       /** With the filter on: only the calls you set allow on (newest per command), not the calls they covered later. */
@@ -272,10 +280,13 @@ export default Plugin.define({
       const [row, setRow] = createSignal(0);
       const selectedRecord = () => list()[Math.min(selected(), Math.max(0, list().length - 1))];
       let scroll: { scrollTo(position: number): void } | undefined;
+      let settingsScroll: { scrollTo(position: number): void } | undefined;
 
       const move = (delta: number) => {
         if (view() === "settings") {
-          setRow((r) => Math.max(0, Math.min((state()?.rows.length ?? 1) - 1, r + delta)));
+          const next = Math.max(0, Math.min((state()?.rows.length ?? 1) - 1, row() + delta));
+          setRow(next);
+          settingsScroll?.scrollTo(Math.max(0, next - 3));
           return;
         }
         const next = Math.max(0, Math.min(list().length - 1, selected() + delta));
@@ -427,7 +438,7 @@ export default Plugin.define({
       );
 
       const Settings = () => (
-        <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
+        <scrollbox ref={(el: any) => (settingsScroll = el)} flexGrow={1} flexBasis={0} minHeight={0}>
           {(state()?.rows ?? []).map((setting, index) => {
             const guard = () => state()?.guard ?? 0;
             const value = () =>
@@ -462,11 +473,11 @@ export default Plugin.define({
           <ModelMatch model={state()?.model ?? null} />
           {state()?.problem && <text fg={COLOR.love as any}>{state()!.problem}</text>}
           <text fg={COLOR.muted as any}>Settings are remembered for this project.</text>
-        </box>
+        </scrollbox>
       );
 
       return (
-        <box flexDirection="column" paddingLeft={2} paddingRight={2} height={28}>
+        <box flexDirection="column" paddingLeft={2} paddingRight={2} height={modalHeight(28)}>
           <box flexDirection="row" flexShrink={0} justifyContent="space-between">
             <box flexDirection="row" gap={1}>
               <text fg={dim(COLOR.foam) as any} attributes={TextAttributes.BOLD}>
@@ -541,7 +552,7 @@ export default Plugin.define({
             return (
               <box flexDirection="row" onMouseUp={() => open(sessionID(), record.id)}>
                 <text fg={(on() ? mark().color : COLOR.muted) as any}>{`${mark().glyph} `}</text>
-                <text fg={(on() ? ctx.theme.text.base : COLOR.muted) as any}>{shorten(record, 30)}</text>
+                <text fg={COLOR.muted as any}>{shorten(record, 30)}</text>
               </box>
             );
           })}
@@ -619,7 +630,9 @@ export default Plugin.define({
       append: "prompt.footer.status",
       render: (input) => {
         const route = context.ui.router.current();
-        return route?.type === "session" ? <FooterIcon sessionID={route.sessionID} /> : null;
+        if (route?.type === "session") return <FooterIcon sessionID={route.sessionID} />;
+        // A new chat has no sidebar yet, so the footer is the only place for the icon.
+        return route?.type === "home" ? <FooterIcon /> : null;
       },
     });
     const stopAskReason = context.ui.slot({
