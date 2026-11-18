@@ -27,6 +27,11 @@ git submodule add https://github.com/HendrikPetertje/opencode-auto-mode.git conf
 git clone https://github.com/HendrikPetertje/opencode-auto-mode.git configured-plugins/auto-mode
 ```
 
+Don't put it in `plugins/`. OpenCode auto-loads every directory there
+**without options**, so you'd get a second copy with no reviewer model next to
+the one you register below. Use a different folder such as
+`configured-plugins/`.
+
 There is no build step and no npm package: OpenCode loads the TypeScript
 directly. Then configure it as described under Setup and restart OpenCode. To
 update later, run `git pull` in the plugin folder (or
