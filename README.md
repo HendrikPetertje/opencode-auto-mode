@@ -183,8 +183,8 @@ In the modal:
 
 | Key | Does |
 |---|---|
-| `j` `k` `g` `G` | scroll |
-| `h` / `l` | toggle mode: what happens to this command for the rest of the session (deny · check · allow) |
+| `j` `k` `g` `G` | scroll (arrow keys, `Home` and `End` work too) |
+| `h` / `l` | toggle mode: what happens to this command for the rest of the session (deny · check · allow); left/right work too |
 | `a` | filter: only the calls you set allow on (newest per command), hiding the calls they allowed later; press again for all |
 | `o` | jump to the call whose allow covered the selected one |
 | `c` | settings (and back) |

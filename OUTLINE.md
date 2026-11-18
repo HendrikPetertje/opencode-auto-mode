@@ -30,14 +30,14 @@ model-less copy next to the configured one.
 | `src/rpc.ts` | `Rpc.define` with methods `state`, `setGlobal`, `setSetting`, `setOverride` and event `changed`. Loose `{type:"object"}` schemas. | `@opencode/plugin/rpc` |
 | `src/options.ts` | Parses plugin options into `Options`. `parseModel` splits `"provider/model"` on the **first** `/`. Missing model -> `problem` string (plugin still runs, review-tier calls escalate to the user). | - |
 | `src/settings.ts` | `GlobalSettings` (enabled, yoloEdits; global) and `ProjectSettings` (reviewer `model`, AGENTS.md/memory toggles, messages, review scope; per project). `model` is set via `setSetting({ key: "model", value })` from the TUI picker (`ui.dialog.select`), never via `adjust`; `reviewerFor(settings)` falls back to the `model` option. Defaults come from options. `SETTING_ROWS` drives the modal's settings view; `adjust` applies space/h/l. Rows can also be actions (`ActionKey`): `resetGuard` is handled in `setSetting` before any stored setting and ends the session's vigilance. | `options.ts` (type) |
-| `src/tiers.ts` | Instant classification: `allow` (read-only tools/commands, subagent starts, yolo in-project edits, reads outside the project), `deny` (catastrophic regexes), `review` (everything else). `sensitivePath`: any dot segment (`.env`, `.aws/`, `.config/`) or secret file name; a shell segment, `read` resource or yolo edit that mentions one is never instant (also inside `--flag=` and `VAR=` values). `grep`/`glob` tools stay instant: their resource is the pattern, not the searched path. `EDIT_ACTIONS`. | `shell.ts` |
+| `src/tiers.ts` | Instant classification: `allow` (read-only tools/commands, subagent starts, yolo in-project edits, reads outside the project), `deny` (catastrophic regexes), `review` (everything else). `websearch` is deliberately **not** in `SAFE_ACTIONS`: its query leaves the machine and can carry data out. `sensitivePath`: any dot segment (`.env`, `.aws/`, `.config/`) or secret file name; a shell segment, `read` resource or yolo edit that mentions one is never instant (also inside `--flag=` and `VAR=` values). `grep`/`glob` tools stay instant: their resource is the pattern, not the searched path. `EDIT_ACTIONS`. | `shell.ts` |
 | `src/shell.ts` | Quote-aware split of a shell command into segments; flags substitution/eval (`dynamic`) and file redirects (`writes`). Not a real parser: it only has to be conservative. | - |
 | `src/config-rules.ts` | Reads `permissions` from all OpenCode config files in precedence order (global, ancestors' `opencode.json(c)`, ancestors' `.opencode/`), plus `agents.<agent>.permissions`. `userDecides` = the user wrote a rule for this specific tool/command -> leave OpenCode's decision alone. | `jsonc.ts`, `paths.ts`, `wildcard.ts` |
 | `src/overrides.ts` | Per-session user choices: `deny` / `check` / `allow` (modal row modes; "always" on a prompt = `allow`). `exactKey(action, subject)` identifies a call. `addAllow` / `removeAllow`: `allow` puts the tool in `always`, or for tools matching the `alikeTools` option (`isAlikeTool`, wildcards; `DEFAULT_ALIKE_TOOLS` = `shell`, `execute`, `webfetch`, `read`, `grep`, `glob`) an `AlikeEntry` the reviewer checks. The list reaches the TUI in the `state` payload. | `wildcard.ts` |
 | `src/transcript.ts` | Builds the reviewer's view of the session: last N user messages and every tool call since, **without** assistant text or tool output. `findToolCommand` recovers the full shell command by tool-call ID; `findToolCall` recovers the input behind a catch-all `*` permission (MCP tools), so the subject is the real input, or `inside execute: <code>` for Code Mode calls. | - |
 | `src/documents.ts` | Collects global/project `AGENTS.md`, global/project memory (`.aim/<memoryFile>` JSONL rendered as lines) and `AUTO_MODE_INSTRUCTIONS.md` (global config dir, then nearest `.opencode/`). Instructions are always included; the rest follows `ProjectSettings`. | `paths.ts`, `settings.ts` |
-| `src/reviewer.ts` | Prompt building (`systemPrompt` = fixed, cacheable; `questionPrompt` = per call), default policy (trusted / blocks / exceptions, overridable via `options.policy`), answer parsing. | `documents.ts`, `options.ts` (types) |
-| `src/records.ts` | `CallRecord` (one row in the UI), status/source enums, `shorten`. Shared by both halves. | `overrides.ts` (type) |
+| `src/reviewer.ts` | Prompt building (`systemPrompt` = fixed, cacheable; `questionPrompt` = per call), default policy (trusted / blocks / exceptions, overridable via `options.policy`), answer parsing. `ReviewRequest.sandbox` adds a `SANDBOX MODE` section to the question (never to the system prompt, which must stay cacheable). | `documents.ts`, `options.ts` (types) |
+| `src/records.ts` | `CallRecord` (one row in the UI), status/source enums (`sandbox` = decided because of sandbox-mode), `shorten`. Shared by both halves. | `overrides.ts` (type) |
 | `src/cost.ts` | Per-session reviewer cost totals, `$` formatting, cached share. | - |
 | `src/guard.ts` | Vigilance after a deny: `Guard { remaining, recent }`. `onDeny` resets to `GUARD_REVIEWS` (10) and keeps the last 3 denials; `onReview` counts down and clears `recent` at 0. | - |
 | `src/log.ts` | Appends to `~/.local/state/opencode-auto-mode/decisions.jsonl` and `plugin.log` through one queue per file; trims each back to the last 1000 lines (`keepLast`) once it reaches 1050. The settings row `openLogs` is a TUI-only action (spawns `open`/`xdg-open`; the server ignores it). | `paths.ts` |
@@ -59,16 +59,20 @@ The order below matters:
    created earlier by `tool.hook("execute.before")`). A second check for the
    same call (shell checks `external_directory` first) gets its own record.
 3. **Off** -> record `off`, leave the effect alone.
-4. **User config rule for this specific tool/command** (`userDecides`) -> leave the effect alone.
-5. **Session override** exact match: deny / allow. `check` (no override) runs the rest.
-6. **Always**: the tool is in the session's `always` list (`allow` on a non-`alikeTools` tool) -> allow.
-7. **Tiers** (`classify`): catastrophic -> deny, read-only/yolo -> allow.
-8. Review scope `prompts` and OpenCode would allow -> leave it.
-9. **Cache**: the reviewer allowed this exact subject earlier in the session -> allow. Skipped while on guard.
-10. **Refused stays refused**: same subject denied by the reviewer and no new user message since -> deny.
-11. **Reviewer alike**: the session's `alikes` for this tool (`allow` on a `alikeTools` tool, with the user's message at that time as the goal). One-word `alikePrompt` question: `ALIKE` -> allow, anything else -> on to review. Skipped while on guard.
-12. **Review**: triage question (one word). `ALLOW` -> allow. Otherwise the reasoning question -> allow / deny / ask. No answer -> ask.
+4. **sandbox-mode** (only when that plugin is loaded; see below): a `deny` whose
+   message starts with `sandbox-mode` stands (record source `sandbox`); with
+   the sandbox on, `external_directory` from anything but `shell` -> ask.
+5. **User config rule for this specific tool/command** (`userDecides`) -> leave the effect alone.
+6. **Session override** exact match: deny / allow. `check` (no override) runs the rest.
+7. **Always**: the tool is in the session's `always` list (`allow` on a non-`alikeTools` tool) -> allow.
+8. **Tiers** (`classify`): catastrophic -> deny, read-only/yolo -> allow.
+9. Review scope `prompts` and OpenCode would allow -> leave it.
+10. **Cache**: the reviewer allowed this exact subject earlier in the session -> allow. Skipped while on guard.
+11. **Refused stays refused**: same subject denied by the reviewer and no new user message since -> deny.
+12. **Reviewer alike**: the session's `alikes` for this tool (`allow` on a `alikeTools` tool, with the user's message at that time as the goal). One-word `alikePrompt` question: `ALIKE` -> allow, anything else -> on to review. Skipped while on guard.
+13. **Review**: triage question (one word). `ALLOW` -> allow. Otherwise the reasoning question -> allow / deny / ask. No answer -> ask.
     While on guard the triage is skipped, every review uses up one guarded call, and `ReviewRequest.recentDenials` puts the last denials before the pending action.
+    With the sandbox on, `shell` and `external_directory` reviews set `ReviewRequest.sandbox`.
 
 ### Decision rules (prompt, `src/reviewer.ts`)
 
@@ -131,6 +135,22 @@ and `GlobalSettings` live in one object on `globalThis.__opencodeAutoMode`, shar
 all copies in the process. Create any new mutable state there too, and mutate
 `global` in place, never reassign it.
 
+## sandbox-mode is optional
+
+The [sandbox-mode](https://github.com/HendrikPetertje/opencode-sandbox-mode)
+plugin runs shell commands in an OS sandbox per project. The two plugins never
+import each other; they meet on `globalThis` (same server process):
+
+- sandbox-mode publishes `globalThis.__opencodeSandboxMode.isSandboxed(directory)`.
+  auto-mode reads it through `sandboxOn(directory)` in `index.ts`; missing
+  means "not sandboxed", so auto-mode works the same without the plugin.
+- sandbox-mode reads `globalThis.__opencodeAutoMode.global.enabled`.
+- sandbox-mode marks its own denies (`webfetch` to a refused host) with a
+  message starting `sandbox-mode`; auto-mode must never turn those into allows.
+- Only `shell` and `external_directory` reviews get the sandbox note. MCP tools
+  (memory, docs) aren't sandboxed, so telling the reviewer about the sandbox
+  there made it ask for every global memory read.
+
 ## Memory is optional
 
 The `.aim` memory comes from a separate plugin (memory MCP). Auto mode must work
@@ -192,6 +212,8 @@ through `visibleRows`, so without the plugin the memory rows are hidden and
   hid `on` from `solid-js` (now imported as `track`) and crashed the slot.
 - **Modal keys:** `j k g G ctrl+d ctrl+u` scroll, `h l` change the selected
   call's mode (decisions) or value (settings), `a` allowed-only filter, `o` open the origin of an allow, `c` settings, `y` yolo, `-` on/off.
+  Arrow keys, `Home` and `End` do the same as `j k h l g G` but stay out of
+  the footer legend (keep it that way: the user wants vim keys advertised only).
 - **Allow origin.** The row an allow is set on (modal or "always" on a prompt)
   keeps an exact `allow` override; `state` sends it as `allowOrigin`. The `a`
   filter shows only those rows, newest per command. Rows merely covered by a
