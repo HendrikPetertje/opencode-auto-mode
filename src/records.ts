@@ -26,6 +26,8 @@ export type RecordSource =
   | "triage"
   | "reviewer"
   | "backstop"
+  /** The sandbox-mode plugin is on for this project: outside-directory access goes to the user. */
+  | "sandbox"
   | "error"
   | "off";
 

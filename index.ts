@@ -501,6 +501,11 @@ export default Plugin.define({
       mismatch: boolean;
     }
     const pending = new Map<string, PendingReview>();
+    /** Whether the sandbox-mode plugin (when loaded) has its sandbox on for this directory. */
+    const sandboxOn = (directory: string | undefined): boolean => {
+      const sandboxed = (globalThis as any).__opencodeSandboxMode?.isSandboxed;
+      return typeof sandboxed === "function" && sandboxed(directory) === true;
+    };
     /** `session + reviewer provider` pairs where model.resolve can't switch providers. */
     const textOnly = new Set<string>();
     const pairKey = (sessionID: string, model: ModelRef) => `${sessionID}\u0000${model.providerID}`;
@@ -609,6 +614,8 @@ export default Plugin.define({
         instructions: docs.instructions,
         mainTranscript,
         recentDenials: guarded ? guard.recent : undefined,
+        // The sandbox is about what commands touch; MCP tools (memory, docs, …) aren't in its scope.
+        sandbox: sandboxOn(info.directory) && (event.action === "shell" || event.action === "external_directory"),
       };
       const system = systemPrompt(policy, docs.background, docs.instructions);
       const key = exactKey(record.action, record.subject);
@@ -810,6 +817,16 @@ export default Plugin.define({
         upsert(record);
 
         if (!global.enabled) return settle(record, "off", "off", `auto mode is off; OpenCode decided: ${event.effect}`);
+
+        // The sandbox-mode plugin, when loaded: with its sandbox on, file tools reaching outside the project are the
+        // user's call. Shell commands are still reviewed (they can reach outside in ways the check doesn't see).
+        if (event.effect === "deny" && typeof event.message === "string" && event.message.startsWith("sandbox-mode")) {
+          return settle(record, "deny", "sandbox", event.message.replace(/^sandbox-mode:\s*/, ""));
+        }
+        const inSandbox = sandboxOn(info.directory);
+        if (inSandbox && event.action === "external_directory" && tool !== "shell") {
+          return escalate(event, record, "sandbox", "the sandbox is on and this file tool reaches outside the project, so you decide");
+        }
 
         const rules = configuredRules(info.directory, event.agent);
         if (userDecides(rules, event.action, resources)) {

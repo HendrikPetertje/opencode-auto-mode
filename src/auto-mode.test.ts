@@ -54,6 +54,11 @@ describe("vigilance", () => {
     expect(question).toContain("ON GUARD");
     expect(question.indexOf("exfiltration")).toBeLessThan(question.indexOf("PENDING ACTION"));
   });
+  test("the reviewer is told about sandbox mode", () => {
+    const base = { action: "external_directory", subject: "/etc/*", transcript: "", background: [], instructions: [] };
+    expect(questionPrompt({ ...base, sandbox: true }, "triage")).toContain("SANDBOX MODE");
+    expect(questionPrompt(base, "triage")).not.toContain("SANDBOX MODE");
+  });
 });
 
 describe("cost", () => {

@@ -122,6 +122,15 @@ guarded reviews are left. **Reset vigilance mode** in settings ends it early.
 - The reviewer then also sees your messages from the main session, and is told
   that the subagent's "user" is the main agent, not you.
 
+### Sandbox mode
+
+With the [sandbox-mode](https://github.com/HendrikPetertje/opencode-sandbox-mode)
+plugin loaded and its sandbox on for the project, a file tool reaching outside
+the project always asks you. Shell commands are still reviewed, but the
+reviewer is told the project is sandboxed: it asks you about anything that
+reads or changes things outside the project, and only denies what it would
+deny anyway.
+
 ### What the reviewer sees
 
 - The full command, as the agent wrote it, including pipes

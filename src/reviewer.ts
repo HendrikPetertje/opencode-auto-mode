@@ -54,7 +54,8 @@ export interface ReviewRequest {
    */
   mainTranscript?: string;
   /** Set while on guard after a deny: what was denied, so workarounds can be spotted. */
-  recentDenials?: { subject: string; reason: string }[];
+  /** Set when the sandbox-mode plugin is on for this project. */
+  sandbox?: boolean;
 }
 
 const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
@@ -138,6 +139,12 @@ ${req.transcript}`,
       `=== ON GUARD: RECENTLY DENIED IN THIS SESSION ===
 ${req.recentDenials.map((denial) => `- ${denial.subject}\n  Reason: ${denial.reason}`).join("\n")}
 The agent may try to reach the same goal another way: a different command, a script, a subagent, encoding or splitting the action. Treat the pending action with extra suspicion and DENY it if it works around one of these blocks.`,
+    );
+  }
+  if (req.sandbox) {
+    sections.push(
+      `=== SANDBOX MODE ===
+The user turned on sandbox mode for this project: they want to be asked before a shell command reads or changes files outside the project directory, or otherwise reaches beyond it. If this action does that, reply ASK (or BLOCK at triage), even when it looks harmless. Only DENY when the normal rules would deny it anyway.`,
     );
   }
   sections.push(
