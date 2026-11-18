@@ -15,6 +15,8 @@ Based on the ideas in
   [Cost](#cost))
 - Optional: the [memory-ticker](https://github.com/HendrikPetertje/opencode-memory-ticker)
   plugin, so the reviewer can see your `.aim` memory
+- Optional: the [sandbox-mode](https://github.com/HendrikPetertje/opencode-sandbox-mode)
+  plugin (see [Sandbox mode](#sandbox-mode))
 
 ## Installation
 
@@ -124,12 +126,20 @@ guarded reviews are left. **Reset vigilance mode** in settings ends it early.
 
 ### Sandbox mode
 
-With the [sandbox-mode](https://github.com/HendrikPetertje/opencode-sandbox-mode)
-plugin loaded and its sandbox on for the project, a file tool reaching outside
-the project always asks you. Shell commands are still reviewed, but the
-reviewer is told the project is sandboxed: it asks you about anything that
-reads or changes things outside the project, and only denies what it would
-deny anyway.
+Auto mode supports the
+[sandbox-mode](https://github.com/HendrikPetertje/opencode-sandbox-mode)
+plugin, which runs the agent's shell commands in an OS sandbox per project.
+With both loaded and the sandbox on for the project:
+
+- A file tool reaching outside the project always asks you.
+- Shell commands are still reviewed, but the reviewer is told the project is
+  sandboxed: it asks you about anything that reads or changes things outside
+  the project, and only denies what it would deny anyway. MCP tools are
+  reviewed as usual.
+- When the sandbox refuses a `webfetch` host, auto mode doesn't override it.
+- These decisions show the source `sandbox` in the modal and the log.
+
+There's nothing to configure; without sandbox-mode none of this applies.
 
 ### What the reviewer sees
 
