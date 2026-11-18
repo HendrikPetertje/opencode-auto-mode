@@ -15,7 +15,7 @@ const SAFE_ACTIONS = new Set([
   "read",
   "glob",
   "grep",
-  "websearch",
+  // Not websearch: its query leaves the machine, so it can carry data out and is reviewed.
   "question",
   "skill",
   "execute",

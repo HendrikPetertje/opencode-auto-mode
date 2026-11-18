@@ -88,6 +88,8 @@ For each permission check, in this order:
    `credentials`, `secrets.*`) goes to review, whether through `cat`/`rg`/… or
    the `read` tool. Once read, a secret sits in the model's context and the
    provider's logs, so the reviewer checks whether the task needs it.
+   **Web searches are reviewed too**: the query leaves your machine, so it
+   could carry secrets or project data out.
 5. **The reviewer model** checks everything else: a quick one-word check first,
    and a full review only when that flags something (anything outside the
    project, near a block rule, or when you asked to be asked). The full review

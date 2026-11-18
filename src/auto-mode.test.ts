@@ -181,6 +181,8 @@ describe("classify", () => {
     expect(classify({ action: "read", resources: ["/Users/test-user/.aws/credentials"], yoloEdits: true }).tier).toBe("review");
     expect(classify({ action: "read", resources: [".env.example"], yoloEdits: true }).tier).toBe("review");
     expect(classify({ action: "read", resources: ["src/app.ts"], yoloEdits: true }).tier).toBe("allow");
+    // The query leaves the machine and can carry data out.
+    expect(classify({ action: "websearch", resources: ["*"], yoloEdits: true }).tier).toBe("review");
     for (const path of [".envrc", ".git/hooks/pre-commit", ".github/workflows/ci.yml", ".opencode/opencode.jsonc"]) {
       expect([path, classify({ action: "edit", resources: [path], yoloEdits: true }).tier]).toEqual([path, "review"]);
     }
