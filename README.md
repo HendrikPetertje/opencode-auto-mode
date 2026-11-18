@@ -13,7 +13,7 @@ Based on the ideas in
 - OpenCode V2
 - A reviewer model, ideally on the same provider as your chat model (see
   [Cost](#cost))
-- Optional: the [memory-ticker](https://github.com/<your-user>/opencode-memory-ticker)
+- Optional: the [memory-ticker](https://github.com/HendrikPetertje/opencode-memory-ticker)
   plugin, so the reviewer can see your `.aim` memory
 
 ## Installation
@@ -22,9 +22,9 @@ Clone it (or add it as a git submodule) somewhere your OpenCode config can reach
 
 ```bash
 cd ~/.config/opencode
-git submodule add https://github.com/<your-user>/opencode-auto-mode.git configured-plugins/auto-mode
+git submodule add https://github.com/HendrikPetertje/opencode-auto-mode.git configured-plugins/auto-mode
 # or, without submodules:
-git clone https://github.com/<your-user>/opencode-auto-mode.git configured-plugins/auto-mode
+git clone https://github.com/HendrikPetertje/opencode-auto-mode.git configured-plugins/auto-mode
 ```
 
 There is no build step and no npm package: OpenCode loads the TypeScript
