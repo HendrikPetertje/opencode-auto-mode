@@ -28,6 +28,8 @@ export type RecordSource =
   | "backstop"
   /** The sandbox-mode plugin is on for this project: outside-directory access goes to the user. */
   | "sandbox"
+  /** The agent is read-only (its edit tool is denied) and the call changes files. */
+  | "edits-off"
   | "error"
   | "off";
 

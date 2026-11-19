@@ -54,8 +54,11 @@ export interface ReviewRequest {
    */
   mainTranscript?: string;
   /** Set while on guard after a deny: what was denied, so workarounds can be spotted. */
+  recentDenials?: { subject: string; reason: string }[];
   /** Set when the sandbox-mode plugin is on for this project. */
   sandbox?: boolean;
+  /** Set when the agent's edit tool is denied (plan mode and the like): paths it may still edit. */
+  readOnly?: { editable: string[] };
 }
 
 const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
@@ -145,6 +148,15 @@ The agent may try to reach the same goal another way: a different command, a scr
     sections.push(
       `=== SANDBOX MODE ===
 The user turned on sandbox mode for this project: they want to be asked before a shell command reads or changes files outside the project directory, or otherwise reaches beyond it. If this action does that, reply ASK (or BLOCK at triage), even when it looks harmless. Only DENY when the normal rules would deny it anyway.`,
+    );
+  }
+  if (req.readOnly) {
+    const editable = req.readOnly.editable.length
+      ? `\nThe only exception: the agent's own edit tool may still write ${req.readOnly.editable.join(", ")}. Shell commands get no exception.`
+      : "";
+    sections.push(
+      `=== READ-ONLY AGENT ===
+The agent${req.agent ? ` "${req.agent}"` : ""} runs with file edits turned off: OpenCode denies its edit tool. It must not change files any other way. If this action creates, modifies, moves or deletes any file (in the project, /tmp, the home folder or anywhere else), or changes the working tree or git state (installs, builds, formatters, code generators, git commit/checkout/reset/stash), reply DENY (BLOCK at triage). This holds even when the user seems to ask for it: the user switches agents to allow edits. Read-only actions are judged as usual.${editable}`,
     );
   }
   sections.push(

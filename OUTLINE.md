@@ -30,14 +30,15 @@ model-less copy next to the configured one.
 | `src/rpc.ts` | `Rpc.define` with methods `state`, `setGlobal`, `setSetting`, `setOverride` and event `changed`. Loose `{type:"object"}` schemas. | `@opencode/plugin/rpc` |
 | `src/options.ts` | Parses plugin options into `Options`. `parseModel` splits `"provider/model"` on the **first** `/`. Missing model -> `problem` string (plugin still runs, review-tier calls escalate to the user). | - |
 | `src/settings.ts` | `GlobalSettings` (enabled, yoloEdits; global) and `ProjectSettings` (reviewer `model`, AGENTS.md/memory toggles, messages, review scope; per project). `model` is set via `setSetting({ key: "model", value })` from the TUI picker (`ui.dialog.select`), never via `adjust`; `reviewerFor(settings)` falls back to the `model` option. Defaults come from options. `SETTING_ROWS` drives the modal's settings view; `adjust` applies space/h/l. Rows can also be actions (`ActionKey`): `resetGuard` is handled in `setSetting` before any stored setting and ends the session's vigilance. | `options.ts` (type) |
-| `src/tiers.ts` | Instant classification: `allow` (read-only tools/commands, subagent starts, yolo in-project edits, reads outside the project), `deny` (catastrophic regexes), `review` (everything else). `websearch` is deliberately **not** in `SAFE_ACTIONS`: its query leaves the machine and can carry data out. `sensitivePath`: any dot segment (`.env`, `.aws/`, `.config/`) or secret file name; a shell segment, `read` resource or yolo edit that mentions one is never instant (also inside `--flag=` and `VAR=` values). `grep`/`glob` tools stay instant: their resource is the pattern, not the searched path. `EDIT_ACTIONS`. | `shell.ts` |
+| `src/tiers.ts` | Instant classification: `allow` (read-only tools/commands, subagent starts, yolo in-project edits, reads outside the project), `deny` (catastrophic regexes), `review` (everything else). `websearch` is deliberately **not** in `SAFE_ACTIONS`: its query leaves the machine and can carry data out. `sensitivePath`: any dot segment (`.env`, `.aws/`, `.config/`) or secret file name; a shell segment, `read` resource or yolo edit that mentions one is never instant (also inside `--flag=` and `VAR=` values). `grep`/`glob` tools stay instant: their resource is the pattern, not the searched path. `EDIT_ACTIONS`. With `readOnly`: no yolo, and a shell command with a file redirect or a `FILE_WRITERS` program / `sed -i` is an instant deny marked `readOnly`. | `shell.ts` |
 | `src/shell.ts` | Quote-aware split of a shell command into segments; flags substitution/eval (`dynamic`) and file redirects (`writes`). Not a real parser: it only has to be conservative. | - |
+| `src/edit-mode.ts` | Read-only agents. `editMode(rules, directory)` probes `edit` on a project file over the agent's + session's rules (last match wins, like OpenCode) but **skips `action: "*"` allow rules**: the user's catch-all allow is appended after plan's `edit: deny` and would otherwise unlock it. Returns `{ readOnly, editable }` (`editable` = specific edit allows, e.g. plan's `~/.opencode/plan/*`). `editableByAgent` checks an edit tool call against them. `permissionRules` sanitises API payloads. | `wildcard.ts` |
 | `src/config-rules.ts` | Reads `permissions` from all OpenCode config files in precedence order (global, ancestors' `opencode.json(c)`, ancestors' `.opencode/`), plus `agents.<agent>.permissions`. `userDecides` = the user wrote a rule for this specific tool/command -> leave OpenCode's decision alone. | `jsonc.ts`, `paths.ts`, `wildcard.ts` |
 | `src/overrides.ts` | Per-session user choices: `deny` / `check` / `allow` (modal row modes; "always" on a prompt = `allow`). `exactKey(action, subject)` identifies a call. `addAllow` / `removeAllow`: `allow` puts the tool in `always`, or for tools matching the `alikeTools` option (`isAlikeTool`, wildcards; `DEFAULT_ALIKE_TOOLS` = `shell`, `execute`, `webfetch`, `read`, `grep`, `glob`) an `AlikeEntry` the reviewer checks. The list reaches the TUI in the `state` payload. | `wildcard.ts` |
 | `src/transcript.ts` | Builds the reviewer's view of the session: last N user messages and every tool call since, **without** assistant text or tool output. `findToolCommand` recovers the full shell command by tool-call ID; `findToolCall` recovers the input behind a catch-all `*` permission (MCP tools), so the subject is the real input, or `inside execute: <code>` for Code Mode calls. | - |
 | `src/documents.ts` | Collects global/project `AGENTS.md`, global/project memory (`.aim/<memoryFile>` JSONL rendered as lines) and `AUTO_MODE_INSTRUCTIONS.md` (global config dir, then nearest `.opencode/`). Instructions are always included; the rest follows `ProjectSettings`. | `paths.ts`, `settings.ts` |
-| `src/reviewer.ts` | Prompt building (`systemPrompt` = fixed, cacheable; `questionPrompt` = per call), default policy (trusted / blocks / exceptions, overridable via `options.policy`), answer parsing. `ReviewRequest.sandbox` adds a `SANDBOX MODE` section to the question (never to the system prompt, which must stay cacheable). | `documents.ts`, `options.ts` (types) |
-| `src/records.ts` | `CallRecord` (one row in the UI), status/source enums (`sandbox` = decided because of sandbox-mode), `shorten`. Shared by both halves. | `overrides.ts` (type) |
+| `src/reviewer.ts` | Prompt building (`systemPrompt` = fixed, cacheable; `questionPrompt` = per call), default policy (trusted / blocks / exceptions, overridable via `options.policy`), answer parsing. `ReviewRequest.sandbox` adds a `SANDBOX MODE` section to the question (never to the system prompt, which must stay cacheable); `ReviewRequest.readOnly` adds `READ-ONLY AGENT` the same way. | `documents.ts`, `options.ts` (types) |
+| `src/records.ts` | `CallRecord` (one row in the UI), status/source enums (`sandbox` = decided because of sandbox-mode, `edits-off` = refused because the agent is read-only), `shorten`. Shared by both halves. | `overrides.ts` (type) |
 | `src/cost.ts` | Per-session reviewer cost totals, `$` formatting, cached share. | - |
 | `src/guard.ts` | Vigilance after a deny: `Guard { remaining, recent }`. `onDeny` resets to `GUARD_REVIEWS` (10) and keeps the last 3 denials; `onReview` counts down and clears `recent` at 0. | - |
 | `src/log.ts` | Appends to `~/.local/state/opencode-auto-mode/decisions.jsonl` and `plugin.log` through one queue per file; trims each back to the last 1000 lines (`keepLast`) once it reaches 1050. The settings row `openLogs` is a TUI-only action (spawns `open`/`xdg-open`; the server ignores it). | `paths.ts` |
@@ -63,16 +64,20 @@ The order below matters:
    message starts with `sandbox-mode` stands (record source `sandbox`); with
    the sandbox on, `external_directory` from anything but `shell` -> ask.
 5. **User config rule for this specific tool/command** (`userDecides`) -> leave the effect alone.
-6. **Session override** exact match: deny / allow. `check` (no override) runs the rest.
-7. **Always**: the tool is in the session's `always` list (`allow` on a non-`alikeTools` tool) -> allow.
-8. **Tiers** (`classify`): catastrophic -> deny, read-only/yolo -> allow.
-9. Review scope `prompts` and OpenCode would allow -> leave it.
-10. **Cache**: the reviewer allowed this exact subject earlier in the session -> allow. Skipped while on guard.
-11. **Refused stays refused**: same subject denied by the reviewer and no new user message since -> deny.
-12. **Reviewer alike**: the session's `alikes` for this tool (`allow` on a `alikeTools` tool, with the user's message at that time as the goal). One-word `alikePrompt` question: `ALIKE` -> allow, anything else -> on to review. Skipped while on guard.
-13. **Review**: triage question (one word). `ALLOW` -> allow. Otherwise the reasoning question -> allow / deny / ask. No answer -> ask.
+6. **Read-only agent** (`editModeFor(sessionID, event.agent, directory)`, see below): `classify(..., readOnly)` deny -> deny (`edits-off`).
+   Edit tools: inside `editable` -> allow, else deny (`edits-off`). From here on `strict` (read-only and `shell`/edit)
+   skips every allow shortcut below (override allow, always, prompts scope, cache, alike) and the triage.
+7. **Session override** exact match: deny / allow. `check` (no override) runs the rest.
+8. **Always**: the tool is in the session's `always` list (`allow` on a non-`alikeTools` tool) -> allow.
+9. **Tiers** (`classify`): catastrophic -> deny, read-only/yolo -> allow.
+10. Review scope `prompts` and OpenCode would allow -> leave it.
+11. **Cache**: the reviewer allowed this exact subject earlier in the session -> allow. Skipped while on guard.
+12. **Refused stays refused**: same subject denied by the reviewer and no new user message since -> deny.
+13. **Reviewer alike**: the session's `alikes` for this tool (`allow` on a `alikeTools` tool, with the user's message at that time as the goal). One-word `alikePrompt` question: `ALIKE` -> allow, anything else -> on to review. Skipped while on guard.
+14. **Review**: triage question (one word). `ALLOW` -> allow. Otherwise the reasoning question -> allow / deny / ask. No answer -> ask.
     While on guard the triage is skipped, every review uses up one guarded call, and `ReviewRequest.recentDenials` puts the last denials before the pending action.
     With the sandbox on, `shell` and `external_directory` reviews set `ReviewRequest.sandbox`.
+    With a read-only agent, `shell` and edit reviews set `ReviewRequest.readOnly` (MCP tools don't: memory writes aren't file edits).
 
 ### Decision rules (prompt, `src/reviewer.ts`)
 
@@ -125,6 +130,7 @@ Errors anywhere -> ask (fail toward the user, never toward allow).
 | Overrides (exact deny/allow per call), `always` tools and reviewer-checked `alikes` | root session (subagent sessions share their parent's) | `ctx.storage` key `session:<rootID>` |
 | Records (the UI list, max 300 per root session), cost total, vigilance guard | root session | `ctx.storage` key `records:<rootID>` = `{ list, cost, guard }`, debounced 500 ms, flushed on unload. On load, `running`/`reviewing` rows become `off` ("interrupted by a plugin reload"). Call `ensureRecords(rootID)` before touching a session's records, cost or guard. |
 | Reviewer cache, refusals, denial counts | process memory | gone on a server restart |
+| Read-only (edit mode) per root session | process memory (`shared.readOnly`) | recomputed from OpenCode on demand |
 | Memory plugin present (`memoryAvailable`) | per plugin copy | `ctx.tool.list()` has a tool matching `/(^\|_)aim_memory_/`, cached 30 s; the `memory` option `true`/`false` skips the check |
 | Decision log, error log | disk | `stateDir()`, outside every watched directory |
 
@@ -150,6 +156,19 @@ import each other; they meet on `globalThis` (same server process):
 - Only `shell` and `external_directory` reviews get the sandbox note. MCP tools
   (memory, docs) aren't sandboxed, so telling the reviewer about the sandbox
   there made it ask for every global memory read.
+
+## Read-only agents
+
+- Source of truth: `ctx.agent.get({ agentID, location })` -> `data.permissions` (OpenCode's resolved rules, config
+  included; cached 10 s) plus `ctx.session.get` -> `permissions` and `agent` (the session's current agent). Cached 2 s
+  per session + agent. Lookup failure -> "not read-only" (old behaviour), never a deny.
+- OpenCode itself evaluates last-match over the same list, so with the user's `"*": "allow"` it lets plan mode edit
+  (plan is held back only by its system reminder). `editMode` skips catch-all allows on purpose; don't "fix" that.
+- `shared.readOnly` (rootID -> boolean) tracks the root session's mode for the TUI; `noteEditMode` emits `changed`
+  when it flips. Updated from `state`, `execute.before`, `evaluate`, and the `session.agent.selected` /
+  `session.permissions` events (which also clear the cache).
+- TUI: `readOnly` in the `state` payload. `yoloStyle`: ON foam / OFF muted / Inactive gold (yolo on but read-only).
+  Turning yolo on while read-only still stores it and shows a warning toast.
 
 ## Memory is optional
 
@@ -210,6 +229,9 @@ through `visibleRows`, so without the plugin the memory rows are hidden and
   state on `globalThis.__opencodeAutoMode`. Restart OpenCode after larger changes.
 - **Don't shadow Solid imports** in components: the sidebar's local `on()` once
   hid `on` from `solid-js` (now imported as `track`) and crashed the slot.
+- **Guard optional values with `<Show keyed>`**, not `cond() ? (...) : ...`: the inner
+  expressions can re-run before the ternary switches. The modal's details pane crashed on
+  `selectedRecord()!.override` when the allowed filter emptied the list.
 - **Modal keys:** `j k g G ctrl+d ctrl+u` scroll, `h l` change the selected
   call's mode (decisions) or value (settings), `a` allowed-only filter, `o` open the origin of an allow, `c` settings, `y` yolo, `-` on/off.
   Arrow keys, `Home` and `End` do the same as `j k h l g G` but stay out of

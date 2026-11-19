@@ -361,3 +361,72 @@ describe("memory plugin", () => {
     expect(effectiveSettings(settings, true)).toBe(settings);
   });
 });
+
+import { editableByAgent, editMode, permissionRules } from "./edit-mode.ts";
+
+describe("read-only agents", () => {
+  const plan = permissionRules([
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "edit", resource: "*", effect: "deny" },
+    { action: "edit", resource: "/Users/me/.opencode/plan/*", effect: "allow" },
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "github_*", resource: "*", effect: "ask" },
+  ]);
+  const build = permissionRules([{ action: "*", resource: "*", effect: "allow" }]);
+
+  test("plan mode is read-only and keeps its plan folder", () => {
+    expect(editMode(plan, "/repo")).toEqual({ readOnly: true, editable: ["/Users/me/.opencode/plan/*"] });
+  });
+  test("the config's catch-all allow after plan's rules doesn't unlock edits; an edit allow does", () => {
+    expect(editMode([...plan, { action: "*", resource: "*", effect: "allow" }], "/repo").readOnly).toBe(true);
+    expect(editMode([...plan, { action: "edit", resource: "*", effect: "allow" }], "/repo").readOnly).toBe(false);
+  });
+  test("a read-only agent's edit tool may only touch its editable paths", () => {
+    const mode = editMode(plan, "/repo");
+    expect(editableByAgent(mode, ["/Users/me/.opencode/plan/a.md"], "/repo")).toBe(true);
+    expect(editableByAgent(mode, ["/Users/me/.opencode/plan/../x.md"], "/repo")).toBe(false);
+    expect(editableByAgent(mode, ["src/a.ts"], "/repo")).toBe(false);
+    expect(editableByAgent(mode, [], "/repo")).toBe(false);
+  });
+  test("build mode and ask rules are not read-only", () => {
+    expect(editMode(build, "/repo").readOnly).toBe(false);
+    expect(editMode([...build, { action: "edit", resource: "*", effect: "ask" }], "/repo").readOnly).toBe(false);
+  });
+  test("a catch-all deny (explore) and session rules count, last match wins", () => {
+    expect(editMode([...build, { action: "*", resource: "*", effect: "deny" }], "/repo").readOnly).toBe(true);
+    expect(editMode([...plan, { action: "edit", resource: "*", effect: "allow" }], "/repo").readOnly).toBe(false);
+    expect(editMode([...build, { action: "edit", resource: "/repo/*", effect: "deny" }], "/repo").readOnly).toBe(true);
+  });
+  test("drops malformed rules", () => {
+    expect(permissionRules([{ action: "edit" }, null, { action: "edit", resource: "*", effect: "nope" }])).toEqual([]);
+    expect(permissionRules(undefined)).toEqual([]);
+  });
+
+  const shell = (command: string) => classify({ action: "shell", resources: [command], command, yoloEdits: true, readOnly: true });
+  test("file-changing commands are denied", () => {
+    for (const command of ["echo hi > notes.md", "rm src/a.ts", "sed -i s/a/b/ x", "mkdir -p /tmp/x", "cat a | tee b", "cp a /tmp/b"]) {
+      expect(shell(command)).toMatchObject({ tier: "deny", readOnly: true });
+    }
+  });
+  test("read-only commands stay instant; unclear ones go to review", () => {
+    expect(shell("rg foo src").tier).toBe("allow");
+    expect(shell("ls > /dev/null").tier).toBe("allow");
+    expect(shell("npm install").tier).toBe("review");
+  });
+  test("yolo does not apply", () => {
+    expect(classify({ action: "edit", resources: ["src/a.ts"], yoloEdits: true, readOnly: true }).tier).toBe("review");
+    expect(classify({ action: "edit", resources: ["src/a.ts"], yoloEdits: true }).tier).toBe("allow");
+  });
+  test("without read-only, writes are reviewed as before", () => {
+    expect(classify({ action: "shell", resources: ["rm a"], command: "rm a", yoloEdits: false }).tier).toBe("review");
+  });
+  test("the reviewer is told, with the agent's editable paths", () => {
+    const base = { action: "shell", subject: "npm install", agent: "plan", transcript: "", background: [], instructions: [] };
+    const question = questionPrompt({ ...base, readOnly: { editable: ["/Users/me/.opencode/plan/*"] } }, "reason");
+    expect(question).toContain("READ-ONLY AGENT");
+    expect(question).toContain('"plan"');
+    expect(question).toContain("/Users/me/.opencode/plan/*");
+    expect(question.indexOf("READ-ONLY AGENT")).toBeLessThan(question.indexOf("PENDING ACTION"));
+    expect(questionPrompt(base, "reason")).not.toContain("READ-ONLY AGENT");
+  });
+});

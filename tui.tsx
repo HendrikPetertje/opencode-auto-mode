@@ -6,7 +6,7 @@
 import { Plugin, usePlugin } from "@opencode/plugin/tui";
 import { RGBA, TextAttributes } from "@opentui/core";
 import { useTerminalDimensions } from "@opentui/solid";
-import { createEffect, createSignal, on as track, onCleanup, onMount } from "solid-js";
+import { createEffect, createSignal, on as track, onCleanup, onMount, Show } from "solid-js";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -21,6 +21,8 @@ import type { ProjectSettings, SettingRow } from "./src/settings.ts";
 interface Payload {
   enabled: boolean;
   yoloEdits: boolean;
+  /** The session's agent can't edit files (plan mode): yolo is inactive. */
+  readOnly?: boolean;
   settings: ProjectSettings;
   rows: SettingRow[];
   problem: string | null;
@@ -58,6 +60,7 @@ const ICON = {
   model: "\uF2DB",
   guard: "\uF071",
   logs: "\uF07C",
+  filter: "\uF0B0",
 };
 const SPINNER = ["◜", "◠", "◝", "◞", "◡", "◟"];
 const SIDEBAR_ROWS = 5;
@@ -139,6 +142,13 @@ function statusGlyph(record: CallRecord, frame: number): { glyph: string; color:
 // Yolo-allowed edits are noise; edits that yolo did not decide (dotfiles, outside the project) stay visible.
 const visible = (payload: Payload | undefined) =>
   (payload?.records ?? []).filter((record) => !(payload!.yoloEdits && record.edit && record.source === "yolo")).slice().reverse();
+
+/** File yolo: on (foam), off (muted), or on but inactive because the agent can't edit files (gold). */
+function yoloStyle(payload: Payload | undefined): { label: string; color: unknown } {
+  if (!payload?.yoloEdits) return { label: "OFF", color: COLOR.muted };
+  return payload.readOnly ? { label: "Inactive", color: COLOR.gold } : { label: "ON", color: COLOR.foam };
+}
+const YOLO_INACTIVE = "Auto mode file edit yolo is disabled while the agent is in read-only mode.";
 
 export default Plugin.define({
   id: "auto-mode.tui",
@@ -315,7 +325,19 @@ export default Plugin.define({
         else void call("setSetting", props.sessionID, { key: setting.key, input: "toggle" });
       };
       const toggleEnabled = () => void call("setGlobal", props.sessionID, { enabled: !state()?.enabled });
-      const toggleYolo = () => void call("setGlobal", props.sessionID, { yoloEdits: !state()?.yoloEdits });
+      /** `a` and the footer button: reset the scroll first, so the list never shrinks under a scrolled-down box. */
+      const toggleAllowedOnly = () => {
+        scroll?.scrollTo(0);
+        setSelected(0);
+        setView("decisions");
+        setAllowedOnly((value) => !value);
+        scroll?.scrollTo(0);
+      };
+      const toggleYolo = () => {
+        const turningOn = !state()?.yoloEdits;
+        if (turningOn && state()?.readOnly) context.ui.toast.show({ variant: "warning", title: "Auto mode", message: YOLO_INACTIVE });
+        void call("setGlobal", props.sessionID, { yoloEdits: turningOn });
+      };
 
       ctx.keymap.layer(() => ({
         mode: "global",
@@ -351,9 +373,7 @@ export default Plugin.define({
             bind: "a",
             run: () => {
               if (view() !== "decisions") return false;
-              setAllowedOnly((on) => !on);
-              setSelected(0);
-              scroll?.scrollTo(0);
+              toggleAllowedOnly();
             },
           },
           { bind: "-", run: toggleEnabled },
@@ -397,48 +417,49 @@ export default Plugin.define({
             )}
           </scrollbox>
           <box flexDirection="column" flexGrow={1} minHeight={0}>
-            {selectedRecord() ? (
+            {/* Keyed: the details only ever see a real record, also when the filter empties the list. */}
+            <Show when={selectedRecord()} keyed fallback={<text fg={COLOR.muted as any}>Nothing selected.</text>}>
+              {(record) => (
               <>
                 <text
                   flexShrink={0}
                   wrapMode="word"
-                  fg={dim(statusGlyph(selectedRecord()!, store.frame).color) as any}
+                  fg={dim(statusGlyph(record, store.frame).color) as any}
                   attributes={TextAttributes.BOLD}
                 >
-                  {selectedRecord()!.status === "reviewing" ? "Reviewing…" : selectedRecord()!.reason || selectedRecord()!.status}
+                  {record.status === "reviewing" ? "Reviewing…" : record.reason || record.status}
                 </text>
                 <text flexShrink={0} fg={COLOR.muted as any}>
-                  {`${selectedRecord()!.action} · ${selectedRecord()!.status} · ${selectedRecord()!.source} · ${new Date(selectedRecord()!.at).toLocaleTimeString()}`}
+                  {`${record.action} · ${record.status} · ${record.source} · ${new Date(record.at).toLocaleTimeString()}`}
                 </text>
                 <box height={1} flexShrink={0} />
                 <scrollbox flexGrow={1} flexBasis={0} minHeight={0}>
-                  <text fg={ctx.theme.text.base as any}>{selectedRecord()!.subject}</text>
+                  <text fg={ctx.theme.text.base as any}>{record.subject}</text>
                 </scrollbox>
                 <box height={1} flexShrink={0} border={["top"]} borderColor={COLOR.muted as any} marginTop={1} />
-                {selectedRecord()!.allowedBy && (
-                  <text flexShrink={0} fg={COLOR.foam as any} onMouseUp={() => jumpTo(selectedRecord()!.allowedBy!)}>
-                    {`${ICON.shield} allowed by: ${shorten(selectedRecord()!.allowedBy!, 50)}  (o / click to open)`}
+                {record.allowedBy && (
+                  <text flexShrink={0} fg={COLOR.foam as any} onMouseUp={() => jumpTo(record.allowedBy!)}>
+                    {`${ICON.shield} allowed by: ${shorten(record.allowedBy!, 50)}  (o / click to open)`}
                   </text>
                 )}
                 <box flexDirection="row" flexShrink={0} gap={1}>
                   <text fg={COLOR.muted as any}>From now on:</text>
                   {OVERRIDES.map((value) => (
                     <text
-                      fg={(selectedRecord()!.override === value ? OVERRIDE_STYLE[value].color : COLOR.muted) as any}
-                      attributes={selectedRecord()!.override === value ? TextAttributes.BOLD : 0}
-                      onMouseUp={() => void call("setOverride", props.sessionID, { recordID: selectedRecord()!.id, value })}
+                      fg={(record.override === value ? OVERRIDE_STYLE[value].color : COLOR.muted) as any}
+                      attributes={record.override === value ? TextAttributes.BOLD : 0}
+                      onMouseUp={() => void call("setOverride", props.sessionID, { recordID: record.id, value })}
                     >
-                      {selectedRecord()!.override === value
-                        ? `[${overrideLabel(value, selectedRecord()!.action, alikeTools())}]`
-                        : ` ${overrideLabel(value, selectedRecord()!.action, alikeTools())} `}
+                      {record.override === value
+                        ? `[${overrideLabel(value, record.action, alikeTools())}]`
+                        : ` ${overrideLabel(value, record.action, alikeTools())} `}
                     </text>
                   ))}
                 </box>
-                <text flexShrink={0} fg={COLOR.muted as any}>{allowHint(selectedRecord()!.action, alikeTools())}</text>
+                <text flexShrink={0} fg={COLOR.muted as any}>{allowHint(record.action, alikeTools())}</text>
               </>
-            ) : (
-              <text fg={COLOR.muted as any}>Nothing selected.</text>
-            )}
+              )}
+            </Show>
           </box>
         </box>
       );
@@ -506,21 +527,14 @@ export default Plugin.define({
           </text>
           <box flexDirection="row" flexShrink={0} justifyContent="flex-end">
             <box flexDirection="row" flexShrink={0} gap={2}>
-              <text
-                fg={(allowedOnly() ? COLOR.foam : COLOR.muted) as any}
-                onMouseUp={() => {
-                  setView("decisions");
-                  setAllowedOnly((on) => !on);
-                  setSelected(0);
-                }}
-              >
-                {`${ICON.shield} allowed (a)`}
+              <text fg={(allowedOnly() ? COLOR.foam : COLOR.muted) as any} onMouseUp={toggleAllowedOnly}>
+                {`${ICON.filter} filter allowed (a)`}
               </text>
               <text fg={(view() === "settings" ? COLOR.iris : COLOR.muted) as any} onMouseUp={() => setView((v) => (v === "settings" ? "decisions" : "settings"))}>
                 {`${ICON.gear} config (c)`}
               </text>
-              <text fg={(state()?.yoloEdits ? COLOR.gold : COLOR.muted) as any} onMouseUp={toggleYolo}>
-                {`${ICON.pencil} file yolo (y)`}
+              <text fg={yoloStyle(state()).color as any} onMouseUp={toggleYolo}>
+                {`${ICON.pencil} file yolo ${yoloStyle(state()).label} (y)`}
               </text>
               <text fg={(on() ? COLOR.foam : COLOR.muted) as any} onMouseUp={toggleEnabled}>
                 {`${ICON.power} ${on() ? "ON" : "OFF"} (-)`}
@@ -550,7 +564,7 @@ export default Plugin.define({
             <text fg={(on() ? ctx.theme.text.base : COLOR.muted) as any} attributes={TextAttributes.BOLD}>
               Auto mode
             </text>
-            {state()?.yoloEdits && <text fg={(on() ? COLOR.gold : COLOR.muted) as any}>{ICON.pencil}</text>}
+            {state()?.yoloEdits && <text fg={(on() ? yoloStyle(state()).color : COLOR.muted) as any}>{ICON.pencil}</text>}
             <text fg={COLOR.muted as any} marginLeft={1}>{formatUsd(state()?.cost ?? emptyCost())}</text>
           </box>
           {rows().map((record) => {

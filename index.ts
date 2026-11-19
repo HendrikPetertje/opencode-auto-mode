@@ -5,6 +5,7 @@
 import { Plugin } from "@opencode/plugin";
 import { configuredRules, userDecides } from "./src/config-rules.ts";
 import { collectDocuments } from "./src/documents.ts";
+import { editableByAgent, editMode, permissionRules, type EditMode, type PermissionRule } from "./src/edit-mode.ts";
 import { logDecision, logError } from "./src/log.ts";
 import { parseModel, parseOptions } from "./src/options.ts";
 import {
@@ -56,7 +57,12 @@ const MAX_RECORDS = 300;
 const MEMORY_TOOL = /(^|_)aim_memory_/;
 /** MCP servers can come and go; re-check the tool list at most this often. */
 const MEMORY_CHECK_MS = 30_000;
+/** Calls that can change files: the ones a read-only agent must not get through. */
+const fileChanging = (action: string) => action === "shell" || EDIT_ACTIONS.has(action);
 const NO_MODEL = "no reviewer model: pick one in auto mode settings, or set \"model\" in the plugin options";
+/** Agent permissions rarely change; session lookups for the edit mode are cheap but frequent. */
+const AGENT_RULES_MS = 10_000;
+const EDIT_MODE_MS = 2_000;
 
 /** Drops modes that no longer exist (the old pattern-based "alike"). */
 function validOverrides(stored: unknown): Record<string, Override> {
@@ -164,6 +170,7 @@ export default Plugin.define({
       loading?: Map<string, Promise<void>>;
       costs?: Map<string, CostTotal>;
       guards?: Map<string, Guard>;
+      readOnly?: Map<string, boolean>;
     };
     const global: GlobalSettings = (shared.global ??= await load("global", globalDefaults(options)));
     const projects = (shared.projects ??= new Map<string, ProjectState>());
@@ -322,6 +329,51 @@ export default Plugin.define({
 
     // ---------------------------------------------------------------- RPC
 
+    // ---------------------------------------------------------------- edit mode
+
+    // Plan mode and the like: OpenCode resolves the agent's permissions (config included) and the session can add
+    // its own on top, last match wins. When they deny the edit tool, auto mode refuses other ways to change files.
+    const agentRules = new Map<string, { at: number; value: Promise<PermissionRule[]> }>();
+    const rulesOfAgent = (agentID: string, directory: string | undefined): Promise<PermissionRule[]> => {
+      const cacheKey = `${agentID}\u0000${directory ?? ""}`;
+      const cached = agentRules.get(cacheKey);
+      if (cached && Date.now() - cached.at < AGENT_RULES_MS) return cached.value;
+      const value = withTimeout<any>(
+        (ctx as any).agent.get({ agentID, ...(directory ? { location: { directory } } : {}) }),
+        CONTEXT_TIMEOUT_MS,
+      ).then((got) => permissionRules(got?.data?.permissions ?? got?.permissions));
+      value.catch(() => agentRules.delete(cacheKey));
+      agentRules.set(cacheKey, { at: Date.now(), value });
+      return value;
+    };
+    const editModes = new Map<string, { at: number; value: Promise<EditMode> }>();
+    /** `agent` is the agent making the call; without it, the session's current agent. Unknown -> edits allowed (as before). */
+    const editModeFor = (sessionID: string, agent: string | undefined, directory: string | undefined): Promise<EditMode> => {
+      const cacheKey = `${sessionID}\u0000${agent ?? ""}`;
+      const cached = editModes.get(cacheKey);
+      if (cached && Date.now() - cached.at < EDIT_MODE_MS) return cached.value;
+      const value = (async () => {
+        try {
+          const got = await withTimeout<any>(ctx.session.get({ sessionID } as any), CONTEXT_TIMEOUT_MS);
+          const agentID: string | undefined = agent ?? got?.agent;
+          const rules = agentID ? await rulesOfAgent(agentID, directory) : [];
+          return editMode([...rules, ...permissionRules(got?.permissions)], directory);
+        } catch (error) {
+          logError(`edit mode ${sessionID}`, error);
+          return { readOnly: false, editable: [] };
+        }
+      })();
+      editModes.set(cacheKey, { at: Date.now(), value });
+      return value;
+    };
+    const readOnlyNow = (shared.readOnly ??= new Map<string, boolean>());
+    /** The TUI shows the root session's mode (yolo pencil); tell it when that changes. */
+    const noteEditMode = (rootID: string, readOnly: boolean) => {
+      if (readOnlyNow.get(rootID) === readOnly) return;
+      readOnlyNow.set(rootID, readOnly);
+      notify(rootID);
+    };
+
     // ---------------------------------------------------------------- memory plugin
 
     // The `.aim` memory belongs to a separate plugin (memory MCP). Without it, auto mode
@@ -354,9 +406,13 @@ export default Plugin.define({
         /** The user set allow on this exact call (the rule's origin), not just covered by it. */
         allowOrigin: sess?.overrides[exactKey(record.action, record.subject)] === "allow",
       }));
+      const readOnly = info.rootID ? (await editModeFor(info.rootID, undefined, info.directory)).readOnly : false;
+      if (info.rootID) noteEditMode(info.rootID, readOnly);
       return {
         enabled: global.enabled,
         yoloEdits: global.yoloEdits,
+        /** The session's agent can't edit files (plan mode): yolo is inactive. */
+        readOnly,
         settings: proj.settings,
         rows: visibleRows(SETTING_ROWS, await memoryAvailable()),
         problem: reviewerFor(proj.settings) ? null : NO_MODEL,
@@ -583,6 +639,7 @@ export default Plugin.define({
       messages: unknown[],
       settings: ProjectSettings,
       model: ModelRef,
+      edits: EditMode,
     ) => {
       record.status = "reviewing";
       record.reason = "";
@@ -616,12 +673,14 @@ export default Plugin.define({
         recentDenials: guarded ? guard.recent : undefined,
         // The sandbox is about what commands touch; MCP tools (memory, docs, …) aren't in its scope.
         sandbox: sandboxOn(info.directory) && (event.action === "shell" || event.action === "external_directory"),
+        // Like the sandbox note: only where files change. MCP tools (memory, docs, …) aren't file edits.
+        readOnly: edits.readOnly && fileChanging(event.action) ? { editable: edits.editable } : undefined,
       };
       const system = systemPrompt(policy, docs.background, docs.instructions);
       const key = exactKey(record.action, record.subject);
       if (info.provider && info.provider !== model.providerID) textOnly.add(pairKey(event.sessionID, model));
 
-      if (!guarded) {
+      if (!guarded && !request.readOnly) {
         const triage = await ask(event.sessionID, record.rootID, model, system, questionPrompt(request, "triage"));
         if (triage === undefined) return escalate(event, record, "error", "the reviewer did not answer, so you decide");
         if (parseTriage(triage) === "allow") {
@@ -745,6 +804,9 @@ export default Plugin.define({
         if (byID.has(String(event.id))) return;
         const info = await sessionInfo(event.sessionID);
         await ensureRecords(info.rootID);
+        if (info.rootID === event.sessionID && event.agent) {
+          void editModeFor(event.sessionID, event.agent, info.directory).then((mode) => noteEditMode(info.rootID, mode.readOnly));
+        }
         upsert({
           id: String(event.id),
           sessionID: event.sessionID,
@@ -836,10 +898,24 @@ export default Plugin.define({
         const sess = await session(info.rootID);
         const proj = await project(info.projectKey);
         const key = exactKey(event.action, subject);
+
+        // A read-only agent (plan mode): file changes are refused before any user shortcut can allow them.
+        const edits = await editModeFor(event.sessionID, event.agent, info.directory);
+        if (info.rootID === event.sessionID) noteEditMode(info.rootID, edits.readOnly);
+        const strict = edits.readOnly && fileChanging(event.action);
+        const tier = classify({ action: event.action, resources, command, tool, yoloEdits: global.yoloEdits, readOnly: edits.readOnly });
+        if (tier.tier === "deny" && tier.readOnly) return deny(event, record, "edits-off", tier.reason);
+        if (edits.readOnly && EDIT_ACTIONS.has(event.action)) {
+          if (editableByAgent(edits, resources, info.directory)) {
+            return allow(event, record, "config", "the read-only agent's own rules let it edit these files");
+          }
+          return deny(event, record, "edits-off", "edits files while the agent is read-only (edits are turned off)");
+        }
+
         const override = sess.overrides[key];
         if (override === "deny") return deny(event, record, "override", "you set this command to deny for this session");
-        if (override === "allow") return allow(event, record, "override", "you allowed this command for this session");
-        if (override !== "check" && !isAlikeTool(event.action, options.alikeTools) && sess.always.includes(event.action)) {
+        if (override === "allow" && !strict) return allow(event, record, "override", "you allowed this command for this session");
+        if (override !== "check" && !strict && !isAlikeTool(event.action, options.alikeTools) && sess.always.includes(event.action)) {
           const origin = Object.entries(sess.overrides).find(
             ([other, mode]) => mode === "allow" && other.startsWith(`${event.action}\u0000`) && other !== key,
           );
@@ -847,17 +923,16 @@ export default Plugin.define({
           return allow(event, record, "always", "you always allowed this tool for this session");
         }
 
-        const tier = classify({ action: event.action, resources, command, tool, yoloEdits: global.yoloEdits });
         if (tier.tier === "deny") return deny(event, record, "catastrophic", tier.reason);
         if (tier.tier === "allow") return allow(event, record, tier.yolo ? "yolo" : "read-only", tier.reason);
 
-        if (proj.settings.review === "prompts" && event.effect !== "ask") {
+        if (proj.settings.review === "prompts" && event.effect !== "ask" && !strict) {
           return settle(record, event.effect, "config", "OpenCode allows this and review is set to prompts only");
         }
         const reviewer = reviewerFor(proj.settings);
         if (!reviewer) return escalate(event, record, "error", NO_MODEL);
 
-        if (override !== "check" && !onGuard(guards.get(info.rootID)) && approved(info.rootID).has(key)) {
+        if (override !== "check" && !strict && !onGuard(guards.get(info.rootID)) && approved(info.rootID).has(key)) {
           return allow(event, record, "cache", "the reviewer allowed this exact command earlier in this session");
         }
         const all = messages ?? (await messagesFor(event.sessionID));
@@ -867,7 +942,7 @@ export default Plugin.define({
           return deny(event, record, "refused", "the reviewer refused this exact command already; it stays refused until you send a new message");
         }
         const alikes = sess.alikes.filter((entry) => entry.action === event.action);
-        if (override !== "check" && alikes.length > 0 && !onGuard(guards.get(info.rootID))) {
+        if (override !== "check" && !strict && alikes.length > 0 && !onGuard(guards.get(info.rootID))) {
           const match = await alikeCheck(event, record, info, all, proj.settings, reviewer, alikes);
           if (match) {
             record.allowedBy = { action: match.action, subject: match.subject };
@@ -875,7 +950,7 @@ export default Plugin.define({
           }
         }
 
-        await review(event, record, info, all, proj.settings, reviewer);
+        await review(event, record, info, all, proj.settings, reviewer, edits);
       } catch (error) {
         logError("evaluate", error);
         if (record && global.enabled) escalate(event, record, "error", "auto-mode hit an error, so you decide");
@@ -888,10 +963,18 @@ export default Plugin.define({
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({
-          types: ["permission.asked", "permission.replied"],
+          types: ["permission.asked", "permission.replied", "session.agent.selected", "session.permissions"],
           signal: abort.signal,
         } as any) as AsyncIterable<any>) {
-          if (event.type === "permission.asked") {
+          if (event.type === "session.agent.selected" || event.type === "session.permissions") {
+            const sessionID = event.data?.sessionID;
+            if (typeof sessionID !== "string") continue;
+            for (const cacheKey of editModes.keys()) if (cacheKey.startsWith(`${sessionID}\u0000`)) editModes.delete(cacheKey);
+            const info = await sessionInfo(sessionID);
+            if (info.rootID !== sessionID) continue;
+            const agent = event.type === "session.agent.selected" ? event.data.agent : undefined;
+            noteEditMode(info.rootID, (await editModeFor(sessionID, agent, info.directory)).readOnly);
+          } else if (event.type === "permission.asked") {
             const data = event.data;
             asked.set(data.id, { sessionID: data.sessionID, action: data.action, callID: data.source?.id });
           } else if (event.type === "permission.replied") {

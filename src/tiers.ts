@@ -8,6 +8,8 @@ export interface Classification {
   reason: string;
   /** Set when the instant allow came from file-edit yolo mode. */
   yolo?: boolean;
+  /** Set when the instant deny came from the agent being read-only. */
+  readOnly?: boolean;
 }
 
 /** Actions that never change anything, or whose nested calls are checked on their own (Code Mode). */
@@ -125,6 +127,19 @@ export interface ClassifyInput {
   /** The tool that triggered the check, when known (external_directory is checked on behalf of a tool). */
   tool?: string;
   yoloEdits: boolean;
+  /** The agent's edit tool is denied: file changes are refused, yolo does not apply. */
+  readOnly?: boolean;
+}
+
+/** Programs whose whole job is to create, change or remove files. */
+const FILE_WRITERS = new Set(["rm", "rmdir", "mv", "cp", "mkdir", "touch", "tee", "ln", "truncate", "install", "unlink", "shred"]);
+
+/** A segment that certainly changes files (a heuristic; everything else unsure goes to review). */
+function writesFiles(segment: string): boolean {
+  const [program = "", ...args] = stripAssignments(words(segment));
+  if (FILE_WRITERS.has(program)) return true;
+  if (program === "sed" || program === "perl") return args.some((arg) => /^-[a-zA-Z]*i/.test(arg) || arg.startsWith("--in-place"));
+  return false;
 }
 
 const READ_TOOLS = new Set(["read", "glob", "grep"]);
@@ -143,6 +158,7 @@ export function classify(input: ClassifyInput): Classification {
   }
 
   if (EDIT_ACTIONS.has(action)) {
+    if (input.readOnly) return { tier: "review", reason: "file edit while the agent is read-only" };
     if (input.yoloEdits && resources.length > 0 && resources.every((r) => insideProject(r) && !sensitivePath(r))) {
       return { tier: "allow", reason: "file edit inside the project (yolo)", yolo: true };
     }
@@ -156,6 +172,9 @@ export function classify(input: ClassifyInput): Classification {
     const pattern = CATASTROPHIC.find((regex) => regex.test(command));
     if (pattern) return { tier: "deny", reason: `matches a catastrophic pattern (${pattern.source})` };
     const scan = scanShell(command);
+    if (input.readOnly && (scan.writes || scan.segments.some(writesFiles))) {
+      return { tier: "deny", reason: "changes files while the agent is read-only (edits are turned off)", readOnly: true };
+    }
     if (scan.dynamic) return { tier: "review", reason: "command uses substitution or eval" };
     if (scan.writes) return { tier: "review", reason: "command writes to a file" };
     if (scan.segments.every(readOnlySegment)) return { tier: "allow", reason: "read-only command" };

@@ -117,6 +117,29 @@ deny, the next **10 reviewed calls** in the session are on guard:
 The shield turns gold while on guard, and the modal header shows how many
 guarded reviews are left. **Reset vigilance mode** in settings ends it early.
 
+### Read-only agents (plan mode)
+
+Auto mode checks which agent made the call and what its permissions are
+(the agent's rules from OpenCode, plus any rules set on the session). When the
+agent's `edit` tool is denied, as in plan mode or `explore`, the agent is
+**read-only** and auto mode stops every other way of changing files:
+
+- Shell commands that clearly write files (`>` redirects, `rm`, `mv`, `cp`,
+  `mkdir`, `touch`, `tee`, `sed -i`, …) are denied right away, anywhere,
+  `/tmp` included. Switch agents if you want edits.
+- The edit tool is allowed only for paths the agent's own rules still allow
+  (plan mode's `~/.opencode/plan/`). Anything else is denied.
+- Other shell commands that aren't read-only always get the full review,
+  which is told the agent is read-only. Your session allows, earlier
+  approvals and "allow alike" don't apply to them.
+- File yolo is inactive.
+- Like any deny, these put the session on guard: the agent broke its contract.
+
+A catch-all `"*": "allow"` in your config doesn't count here. OpenCode puts
+it after plan mode's own `edit: deny` rule, so OpenCode itself would let plan
+mode edit files, and only its prompt holds it back. A rule for `edit`
+specifically (on the agent or the session) does count.
+
 ### Subagents
 
 - Starting a subagent is instant: the check only names the agent, not its task.
@@ -170,7 +193,8 @@ and the total gets a `+`.
 
 ## Using it
 
-- **Sidebar**: the shield, "Auto mode", a pencil when yolo is on, the cost, and
+- **Sidebar**: the shield, "Auto mode", a pencil when yolo is on (foam, or
+  gold while the agent is read-only and yolo is inactive), the cost, and
   the last 5 tool calls with their decision (a spinner while one is being
   reviewed). Click a row or "… more" to open the modal.
 - **Footer icon**: shown when the sidebar is hidden. Click it to open the modal.
@@ -185,10 +209,10 @@ In the modal:
 |---|---|
 | `j` `k` `g` `G` | scroll (arrow keys, `Home` and `End` work too) |
 | `h` / `l` | toggle mode: what happens to this command for the rest of the session (deny · check · allow); left/right work too |
-| `a` | filter: only the calls you set allow on (newest per command), hiding the calls they allowed later; press again for all |
+| `a` | filter allowed (the footer button, foam while on): only the calls you set allow on (newest per command), hiding the calls they allowed later; press again for all |
 | `o` | jump to the call whose allow covered the selected one |
 | `c` | settings (and back) |
-| `y` | file yolo on/off |
+| `y` | file yolo: ON (foam), OFF (grey), or Inactive (gold) while the agent is read-only. Turning it on in a read-only agent shows a notice. |
 | `-` | auto mode on/off |
 | `esc` | close |
 
