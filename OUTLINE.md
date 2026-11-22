@@ -236,6 +236,10 @@ through `visibleRows`, so without the plugin the memory rows are hidden and
   call's mode (decisions) or value (settings), `a` allowed-only filter, `o` open the origin of an allow, `c` settings, `y` yolo, `-` on/off.
   Arrow keys, `Home` and `End` do the same as `j k h l g G` but stay out of
   the footer legend (keep it that way: the user wants vim keys advertised only).
+- **Selection follows the record, not the index.** The list is newest first, so a
+  new call prepends a row. The modal keeps `selectedId` and derives the index from
+  it (`selectedIndex` is only the fallback when the id is gone, e.g. after the
+  `a` filter). Use `setSelected(index)` to change it; don't hold a raw index.
 - **Allow origin.** The row an allow is set on (modal or "always" on a prompt)
   keeps an exact `allow` override; `state` sends it as `allowOrigin`. The `a`
   filter shows only those rows, newest per command. Rows merely covered by a

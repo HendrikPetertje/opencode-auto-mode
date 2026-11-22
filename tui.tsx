@@ -286,7 +286,18 @@ export default Plugin.define({
         scroll?.scrollTo(Math.max(0, index - 8));
       };
       const initial = Math.max(0, list().findIndex((r) => r.id === props.recordID));
-      const [selected, setSelected] = createSignal(initial);
+      // New records are prepended (newest first), so follow the selected record by id instead of its index.
+      const [selectedIndex, setSelectedIndex] = createSignal(initial);
+      const [selectedId, setSelectedId] = createSignal<string | undefined>(list()[initial]?.id);
+      const selected = () => {
+        const id = selectedId();
+        const found = id === undefined ? -1 : list().findIndex((r) => r.id === id);
+        return found === -1 ? selectedIndex() : found;
+      };
+      const setSelected = (index: number) => {
+        setSelectedIndex(index);
+        setSelectedId(list()[index]?.id);
+      };
       const [row, setRow] = createSignal(0);
       const selectedRecord = () => list()[Math.min(selected(), Math.max(0, list().length - 1))];
       let scroll: { scrollTo(position: number): void } | undefined;
@@ -331,6 +342,7 @@ export default Plugin.define({
         setSelected(0);
         setView("decisions");
         setAllowedOnly((value) => !value);
+        setSelectedId(undefined);
         scroll?.scrollTo(0);
       };
       const toggleYolo = () => {
